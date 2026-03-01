@@ -183,18 +183,24 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             const resetMs = parseResetTime(response, errorText);
                             const consecutiveFailures = accountManager.getConsecutiveFailures?.(account.email) || 0;
 
-                            // Check if capacity issue (NOT quota) - retry same endpoint with progressive backoff
+                            // Check if capacity issue (NOT quota) - try next endpoint first, then backoff
                             if (isModelCapacityExhausted(errorText)) {
                                 if (capacityRetryCount < MAX_CAPACITY_RETRIES) {
-                                    // Progressive capacity backoff tiers
-                                    const tierIndex = Math.min(capacityRetryCount, CAPACITY_BACKOFF_TIERS_MS.length - 1);
-                                    const waitMs = resetMs || CAPACITY_BACKOFF_TIERS_MS[tierIndex];
                                     capacityRetryCount++;
-                                    // Track failures for progressive backoff escalation (matches opencode-antigravity-auth)
                                     accountManager.incrementConsecutiveFailures(account.email);
-                                    logger.info(`[CloudCode] Model capacity exhausted, retry ${capacityRetryCount}/${MAX_CAPACITY_RETRIES} after ${formatDuration(waitMs)}...`);
+                                    // If another endpoint is available, switch immediately (no wait)
+                                    if (endpointIndex + 1 < ANTIGRAVITY_ENDPOINT_FALLBACKS.length) {
+                                        logger.info(`[CloudCode] Model capacity exhausted at ${endpoint}, trying next endpoint immediately...`);
+                                        endpointIndex++;
+                                        continue;
+                                    }
+                                    // All endpoints exhausted - apply progressive backoff then reset
+                                    const cycleCount = Math.floor(capacityRetryCount / ANTIGRAVITY_ENDPOINT_FALLBACKS.length);
+                                    const tierIndex = Math.min(cycleCount, CAPACITY_BACKOFF_TIERS_MS.length - 1);
+                                    const waitMs = resetMs || CAPACITY_BACKOFF_TIERS_MS[tierIndex];
+                                    logger.info(`[CloudCode] All endpoints capacity exhausted (retry ${capacityRetryCount}/${MAX_CAPACITY_RETRIES}), waiting ${formatDuration(waitMs)}...`);
                                     await sleep(waitMs);
-                                    // Don't increment endpointIndex - retry same endpoint
+                                    endpointIndex = 0;
                                     continue;
                                 }
                                 // Max capacity retries exceeded - treat as quota exhaustion
@@ -258,14 +264,21 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                         // 529 = Site Overloaded (same treatment as 503)
                         if ((response.status === 503 || response.status === 529) && isModelCapacityExhausted(errorText)) {
                             if (capacityRetryCount < MAX_CAPACITY_RETRIES) {
-                                // Progressive capacity backoff tiers (same as 429 capacity handling)
-                                const tierIndex = Math.min(capacityRetryCount, CAPACITY_BACKOFF_TIERS_MS.length - 1);
-                                const waitMs = CAPACITY_BACKOFF_TIERS_MS[tierIndex];
                                 capacityRetryCount++;
                                 accountManager.incrementConsecutiveFailures(account.email);
-                                logger.info(`[CloudCode] ${response.status} Model capacity exhausted, retry ${capacityRetryCount}/${MAX_CAPACITY_RETRIES} after ${formatDuration(waitMs)}...`);
+                                // If another endpoint is available, switch immediately (no wait)
+                                if (endpointIndex + 1 < ANTIGRAVITY_ENDPOINT_FALLBACKS.length) {
+                                    logger.info(`[CloudCode] ${response.status} Model capacity exhausted at ${endpoint}, trying next endpoint immediately...`);
+                                    endpointIndex++;
+                                    continue;
+                                }
+                                // All endpoints exhausted - apply progressive backoff then reset
+                                const cycleCount = Math.floor(capacityRetryCount / ANTIGRAVITY_ENDPOINT_FALLBACKS.length);
+                                const tierIndex = Math.min(cycleCount, CAPACITY_BACKOFF_TIERS_MS.length - 1);
+                                const waitMs = CAPACITY_BACKOFF_TIERS_MS[tierIndex];
+                                logger.info(`[CloudCode] ${response.status} All endpoints capacity exhausted (retry ${capacityRetryCount}/${MAX_CAPACITY_RETRIES}), waiting ${formatDuration(waitMs)}...`);
                                 await sleep(waitMs);
-                                // Don't increment endpointIndex - retry same endpoint
+                                endpointIndex = 0;
                                 continue;
                             }
                             // Max capacity retries exceeded - switch account
