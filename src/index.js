@@ -64,6 +64,9 @@ if (process.env.HOST) {
 const HOME_DIR = os.homedir();
 const CONFIG_DIR = path.join(HOME_DIR, '.antigravity-claude-proxy');
 
+// Pre-initialize account manager so the startup banner shows the correct strategy label
+await accountManager.initialize(strategyOverride);
+
 const server = app.listen(PORT, HOST, () => {
     // Get actual bound address
     const address = server.address();
